@@ -1,0 +1,78 @@
+# v0.2.16
+# {
+#   "Seq": [
+#     { "Depends": "py-lib-genlayer-embeddings:09h0i209wrzh4xzq86f79c60x0ifs7xcjwl53ysrnw06i54ddxyi" },
+#     { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+#   ]
+# }
+
+import numpy as np
+from genlayer import *
+import genlayer_embeddings as gle
+
+from dataclasses import dataclass
+import typing
+
+
+@allow_storage
+@dataclass
+class NewsItem:
+    news_id: u256
+    title: str
+    category: str
+
+
+class NewsSearcher(gl.Contract):
+    vector_store: gle.VecDB[np.float32, typing.Literal[384], NewsItem]
+
+    def __init__(self):
+        pass
+
+    def get_embedding_generator(self):
+        return gle.SentenceTransformer("all-MiniLM-L6-v2")
+
+    def get_embedding(
+        self, txt: str
+    ) -> np.ndarray[tuple[typing.Literal[384]], np.dtypes.Float32DType]:
+        return self.get_embedding_generator()(txt)
+
+    @gl.public.write
+    def add_news(self, title: str, category: str, news_id: int) -> None:
+        emb = self.get_embedding(title)
+        self.vector_store.insert(
+            emb, NewsItem(title=title, category=category, news_id=u256(news_id))
+        )
+
+    @gl.public.view
+    def find_similar_news(self, query: str) -> dict | None:
+        emb = self.get_embedding(query)
+        result = list(self.vector_store.knn(emb, 1))
+        if len(result) == 0:
+            return None
+        result = result[0]
+        return {
+            "id": result.value.news_id,
+            "title": result.value.title,
+            "category": result.value.category,
+            "similarity": str(1 - result.distance),
+        }
+
+    @gl.public.view
+    def find_top3(self, query: str) -> list:
+        emb = self.get_embedding(query)
+        results = list(self.vector_store.knn(emb, 3))
+        output = []
+        for r in results:
+            output.append({
+                "id": r.value.news_id,
+                "title": r.value.title,
+                "category": r.value.category,
+                "similarity": str(1 - r.distance),
+            })
+        return output
+
+    @gl.public.write
+    def remove_news(self, news_id: int) -> None:
+        for el in self.vector_store:
+            if el.value.news_id == news_id:
+                el.remove
