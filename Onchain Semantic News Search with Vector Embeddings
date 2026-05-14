@@ -9,10 +9,8 @@
 import numpy as np
 from genlayer import *
 import genlayer_embeddings as gle
-
 from dataclasses import dataclass
 import typing
-
 
 @allow_storage
 @dataclass
@@ -20,7 +18,7 @@ class NewsItem:
     news_id: u256
     title: str
     category: str
-
+    removed: bool  # ← soft delete flag
 
 class NewsSearcher(gl.Contract):
     vector_store: gle.VecDB[np.float32, typing.Literal[384], NewsItem]
@@ -40,39 +38,43 @@ class NewsSearcher(gl.Contract):
     def add_news(self, title: str, category: str, news_id: int) -> None:
         emb = self.get_embedding(title)
         self.vector_store.insert(
-            emb, NewsItem(title=title, category=category, news_id=u256(news_id))
+            emb, NewsItem(title=title, category=category, news_id=u256(news_id), removed=False)
         )
 
     @gl.public.view
     def find_similar_news(self, query: str) -> dict | None:
         emb = self.get_embedding(query)
-        result = list(self.vector_store.knn(emb, 1))
-        if len(result) == 0:
-            return None
-        result = result[0]
-        return {
-            "id": result.value.news_id,
-            "title": result.value.title,
-            "category": result.value.category,
-            "similarity": str(1 - result.distance),
-        }
+        results = list(self.vector_store.knn(emb, 10))
+        for r in results:
+            if not r.value.removed:
+                return {
+                    "id": r.value.news_id,
+                    "title": r.value.title,
+                    "category": r.value.category,
+                    "similarity": str(1 - r.distance),
+                }
+        return None
 
     @gl.public.view
     def find_top3(self, query: str) -> list:
         emb = self.get_embedding(query)
-        results = list(self.vector_store.knn(emb, 3))
+        results = list(self.vector_store.knn(emb, 20))
         output = []
         for r in results:
-            output.append({
-                "id": r.value.news_id,
-                "title": r.value.title,
-                "category": r.value.category,
-                "similarity": str(1 - r.distance),
-            })
+            if not r.value.removed:
+                output.append({
+                    "id": r.value.news_id,
+                    "title": r.value.title,
+                    "category": r.value.category,
+                    "similarity": str(1 - r.distance),
+                })
+            if len(output) == 3:
+                break
         return output
 
     @gl.public.write
     def remove_news(self, news_id: int) -> None:
         for el in self.vector_store:
-            if el.value.news_id == news_id:
-                el.remove
+            if el.value.news_id == u256(news_id):
+                el.value.removed = True
+                break
